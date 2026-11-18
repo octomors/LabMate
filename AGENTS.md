@@ -1,0 +1,1 @@
+- Quality bar: clean layers, small files, styles separated from markup, domain logic separated from UI. But NO over-engineering: no abstraction until it is used in 2+ places, no single-implementation interfaces, no managers/factories/DI.
