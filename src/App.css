@@ -71,8 +71,11 @@ em { font-family:Fraunces,serif; font-weight:500; color:var(--green); }
 .messenger-topic { margin-left:auto; color:var(--orange)!important; font:10px 'DM Mono',monospace!important; text-transform:uppercase; }
 .messenger-task { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#f4f1e8; border-bottom:1px solid var(--line); font-size:12px; }
 .messenger-task strong { color:var(--green); }.messenger-task span { flex:1; color:var(--muted); overflow-wrap:anywhere; word-break:break-word; }.messenger-task b { color:var(--green); }
-.messenger-messages { flex:1; min-height:300px; padding:25px; display:flex; flex-direction:column; justify-content:flex-end; gap:9px; overflow:auto; }
-.messenger-message { max-width:72%; align-self:flex-start; background:#e9eee9; border-radius:4px 11px 11px 11px; padding:10px 13px; }.messenger-message.mine { align-self:flex-end; background:#dcece0; border-radius:11px 4px 11px 11px; }.messenger-message p { margin:0 0 5px; font-size:13px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }.messenger-message small { color:var(--muted); font-size:9px; }
+.messenger-messages { flex:1; height:360px; min-height:300px; max-height:360px; padding:25px; display:flex; flex-direction:column; gap:10px; overflow-y:auto; overflow-x:hidden; }
+.messenger-message { max-width:72%; width:fit-content; align-self:flex-start; background:#e9eee9; border-radius:4px 11px 11px 11px; padding:10px 13px; box-shadow:0 2px 7px #28382b0b; }
+.messenger-message.mine { align-self:flex-end; background:#dcece0; border-radius:11px 4px 11px 11px; }
+.messenger-message p { margin:0 0 5px; font-size:13px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+.messenger-message small { display:block; color:var(--muted); font-size:9px; text-align:right; }
 .messenger-compose { display:flex; gap:9px; padding:15px 20px; border-top:1px solid var(--line); }.messenger-compose input { min-width:0; flex:1; border:1px solid var(--line); border-radius:6px; padding:12px; background:#fff; outline-color:var(--green); }.messenger-compose .primary-button { padding:10px 14px; }.messenger-error { margin:0 20px 12px; }.messenger-empty { min-height:560px; display:grid; place-items:center; border:1px solid var(--line); border-radius:11px; color:var(--muted); }.standalone-empty { min-height:400px; }
 .empty-icon { color:var(--orange); font-size:29px; margin-bottom:15px; }
 .empty-card h3 { font-size:18px; margin-bottom:7px; }

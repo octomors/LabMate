@@ -137,17 +137,17 @@ app.get('/api/catalog', auth, (_req, res) => res.json({
 
 app.get('/api/tasks', auth, (req: AuthRequest, res) => {
   const isTutor = req.query.view === 'tutor'
-  const topic = typeof req.query.topic === 'string' ? req.query.topic : ''
-  const minPrice = Number(req.query.minPrice ?? 0)
+  const topic = isTutor && typeof req.query.topic === 'string' ? req.query.topic : ''
+  const minPrice = isTutor ? Number(req.query.minPrice ?? 0) : 0
   const rows = db.prepare(`
     SELECT t.id, t.title, s.name AS subject, tp.name AS topic, t.assignment, t.comment, t.price, t.selected_tutor_id AS selectedTutorId,
       u.email AS studentEmail, COUNT(a.id) AS applications,
       (SELECT body FROM messages m WHERE m.task_id = t.id ORDER BY m.id LIMIT 1) AS firstMessage
     FROM tasks t JOIN topics tp ON tp.id=t.topic_id JOIN subjects s ON s.id=t.subject_id JOIN users u ON u.id=t.student_id
     LEFT JOIN applications a ON a.task_id=t.id
-    WHERE (? = 0 OR t.student_id = ?) AND (? = 1 OR t.selected_tutor_id IS NULL) AND (? = '' OR tp.name = ?) AND (? = 0 OR t.price >= ?)
+    WHERE (? = 0 OR t.student_id = ?) AND (? = 0 OR t.student_id != ?) AND (? = 1 OR t.selected_tutor_id IS NULL) AND (? = '' OR tp.name = ?) AND (? = 0 OR t.price >= ?)
     GROUP BY t.id ORDER BY t.created_at DESC
-  `).all(isTutor ? 0 : 1, req.user?.id, isTutor ? 1 : 0, topic, topic, minPrice, minPrice)
+  `).all(isTutor ? 0 : 1, req.user?.id, isTutor ? 1 : 0, req.user?.id, isTutor ? 1 : 0, topic, topic, minPrice, minPrice)
   res.json(rows)
 })
 
@@ -168,6 +168,7 @@ app.post('/api/tasks/:id/apply', auth, (req: AuthRequest, res) => {
   const { message } = req.body as { message?: string }
   const task = db.prepare('SELECT student_id FROM tasks WHERE id = ? AND selected_tutor_id IS NULL').get(req.params.id) as { student_id: number } | undefined
   if (!task || !message) return res.status(400).json({ error: 'Отклик недоступен' })
+  if (task.student_id === req.user?.id) return res.status(403).json({ error: 'Нельзя откликнуться на свою задачу' })
   try {
     const application = db.prepare('INSERT INTO applications (task_id, tutor_id) VALUES (?, ?)').run(req.params.id, req.user?.id)
     db.prepare('INSERT INTO messages (task_id, sender_id, tutor_id, body) VALUES (?, ?, ?, ?)').run(req.params.id, req.user?.id, req.user?.id, message)
@@ -179,18 +180,47 @@ app.post('/api/tasks/:id/apply', auth, (req: AuthRequest, res) => {
 
 app.get('/api/tasks/:id/chats', auth, (req: AuthRequest, res) => {
   const task = db.prepare('SELECT student_id, selected_tutor_id FROM tasks WHERE id = ?').get(req.params.id) as { student_id: number; selected_tutor_id: number | null } | undefined
-  if (!task || (task.student_id !== req.user?.id && task.selected_tutor_id !== req.user?.id)) return res.status(403).json({ error: 'Нет доступа' })
+  if (!task) return res.status(404).json({ error: 'Задача не найдена' })
+
+  const applied = db.prepare('SELECT 1 FROM applications WHERE task_id=? AND tutor_id=?').get(req.params.id, req.user?.id)
+  if (task.selected_tutor_id) {
+    if (task.student_id !== req.user?.id && task.selected_tutor_id !== req.user?.id) {
+      return res.status(403).json({ error: 'Задача уже принята другим помощником' })
+    }
+  } else if (task.student_id !== req.user?.id && !applied) {
+    return res.status(403).json({ error: 'Нет доступа' })
+  }
+
+  if (!task.selected_tutor_id) {
+    if (task.student_id === req.user?.id) {
+      const applicants = db.prepare(`
+        SELECT u.id AS tutorId, u.email AS tutorEmail
+        FROM applications a JOIN users u ON u.id=a.tutor_id
+        WHERE a.task_id=? ORDER BY a.created_at
+      `).all(req.params.id)
+      return res.json(applicants.map((applicant) => ({ ...applicant as object, messages: [] })))
+    }
+    if (applied) {
+      const applicant = db.prepare('SELECT id AS tutorId, email AS tutorEmail FROM users WHERE id=?').get(req.user?.id) as { tutorId: number; tutorEmail: string }
+      return res.json([{ ...applicant, messages: [] }])
+    }
+  }
+
   const chats = db.prepare(`
     SELECT m.tutor_id AS tutorId, u.email AS tutorEmail,
       json_group_array(json_object('id', m.id, 'body', m.body, 'senderId', m.sender_id, 'createdAt', m.created_at)) AS messages
-    FROM messages m JOIN users u ON u.id=m.tutor_id WHERE m.task_id=? GROUP BY m.tutor_id
-  `).all(req.params.id)
+    FROM messages m JOIN users u ON u.id=m.tutor_id
+    WHERE m.task_id=? AND (? = 0 OR m.tutor_id=?)
+    GROUP BY m.tutor_id
+  `).all(req.params.id, task.selected_tutor_id ? 1 : 0, task.selected_tutor_id)
   res.json(chats.map((chat) => ({ ...chat as object, messages: JSON.parse((chat as { messages: string }).messages) })))
 })
 
 app.post('/api/tasks/:id/select', auth, (req: AuthRequest, res) => {
   const task = db.prepare('SELECT student_id FROM tasks WHERE id=?').get(req.params.id) as { student_id: number } | undefined
   if (!task || task.student_id !== req.user?.id) return res.status(403).json({ error: 'Только студент может выбрать репетитора' })
+  const applied = db.prepare('SELECT 1 FROM applications WHERE task_id=? AND tutor_id=?').get(req.params.id, req.body.tutorId)
+  if (!applied) return res.status(400).json({ error: 'Можно выбрать только откликнувшегося помощника' })
   db.prepare('UPDATE tasks SET selected_tutor_id=? WHERE id=? AND selected_tutor_id IS NULL').run(req.body.tutorId, req.params.id)
   res.status(204).end()
 })
@@ -198,7 +228,8 @@ app.post('/api/tasks/:id/select', auth, (req: AuthRequest, res) => {
 app.post('/api/tasks/:id/messages', auth, (req: AuthRequest, res) => {
   const { tutorId, body } = req.body as { tutorId?: number; body?: string }
   const task = db.prepare('SELECT student_id, selected_tutor_id FROM tasks WHERE id=?').get(req.params.id) as { student_id: number; selected_tutor_id: number | null } | undefined
-  if (!task || !body || !tutorId || (task.student_id !== req.user?.id && task.selected_tutor_id !== req.user?.id) || (task.selected_tutor_id && task.selected_tutor_id !== tutorId)) return res.status(403).json({ error: 'Сообщение нельзя отправить' })
+  if (!task || !body || !tutorId || task.selected_tutor_id !== tutorId) return res.status(403).json({ error: 'Чат доступен только после принятия отклика' })
+  if (task.student_id !== req.user?.id && task.selected_tutor_id !== req.user?.id) return res.status(403).json({ error: 'Нет доступа к переписке' })
   db.prepare('INSERT INTO messages (task_id, sender_id, tutor_id, body) VALUES (?, ?, ?, ?)').run(req.params.id, req.user?.id, tutorId, body)
   res.status(204).end()
 })
@@ -211,7 +242,7 @@ app.get('/api/chats', auth, (req: AuthRequest, res) => {
       MAX(m.created_at) AS lastAt, (SELECT body FROM messages m2 WHERE m2.task_id=t.id ORDER BY m2.id DESC LIMIT 1) AS lastMessage
     FROM tasks t JOIN subjects s ON s.id=t.subject_id JOIN topics tp ON tp.id=t.topic_id
       JOIN users u ON u.id=t.student_id JOIN messages m ON m.task_id=t.id JOIN users tu ON tu.id=m.tutor_id
-    WHERE (t.student_id=? OR m.tutor_id=?) GROUP BY t.id, m.tutor_id ORDER BY lastAt DESC
+    WHERE t.selected_tutor_id IS NOT NULL AND (t.student_id=? OR m.tutor_id=?) AND m.tutor_id=t.selected_tutor_id GROUP BY t.id, m.tutor_id ORDER BY lastAt DESC
   `).all(req.user?.id, req.user?.id, req.user?.id)
   res.json(rows)
 })

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 type Role = 'student' | 'tutor'
@@ -92,9 +92,9 @@ function Dashboard({ user, mode, onModeChange, onLogout }: { user: User; mode: R
   const [minPrice, setMinPrice] = useState('')
   const [notice, setNotice] = useState('')
 
-  async function loadTasks() {
+  async function loadTasks(nextMode: Role = mode) {
     try {
-      const params = new URLSearchParams({ view: mode })
+      const params = new URLSearchParams({ view: nextMode })
       if (topic) params.set('topic', topic)
       if (minPrice) params.set('minPrice', minPrice)
       setTasks(await request<Task[]>(`/tasks?${params}`))
@@ -104,26 +104,41 @@ function Dashboard({ user, mode, onModeChange, onLogout }: { user: User; mode: R
     }
   }
   useEffect(() => { void loadTasks() }, [mode, topic, minPrice])
+  useEffect(() => {
+    if (mode !== 'tutor' || page !== 'tasks') return
+    const interval = window.setInterval(() => { void loadTasks('tutor') }, 8000)
+    return () => window.clearInterval(interval)
+  }, [mode, page])
   async function loadChats() {
     try { setChats(await request<ChatSummary[]>('/chats')) } catch (reason) { setNotice(reason instanceof Error ? reason.message : 'Не удалось загрузить чаты') }
   }
   useEffect(() => { if (page === 'chats') void loadChats() }, [page])
-  const filteredTasks = useMemo(() => tasks.filter((task) => `${task.title} ${task.subject} ${task.topic} ${task.assignment}`.toLowerCase().includes(search.toLowerCase())), [tasks, search])
+  const filteredTasks = useMemo(() => mode === 'student'
+    ? tasks
+    : tasks.filter((task) => `${task.title} ${task.subject} ${task.topic} ${task.assignment}`.toLowerCase().includes(search.toLowerCase())), [tasks, search, mode])
 
   async function deleteTask(id: number) {
     try { await request(`/tasks/${id}`, { method: 'DELETE' }); setTasks((items) => items.filter((task) => task.id !== id)) } catch (reason) { setNotice(reason instanceof Error ? reason.message : 'Не удалось удалить задачу') }
   }
 
+  function switchMode(nextMode: Role) {
+    setSearch('')
+    setTopic('')
+    setMinPrice('')
+    onModeChange(nextMode)
+    void loadTasks(nextMode)
+  }
+
   return (
     <div className="app-shell">
-      <header className="topbar"><div className="brand"><span className="brand-mark">L</span><span>Lab<span>Mate</span></span></div><nav><button className={mode === 'student' && page === 'tasks' ? 'active' : ''} onClick={() => { onModeChange('student'); setPage('tasks') }}>Для студента</button><button className={mode === 'tutor' && page === 'tasks' ? 'active' : ''} onClick={() => { onModeChange('tutor'); setPage('tasks') }}>Для помощника</button><button className={page === 'chats' ? 'active' : ''} onClick={() => setPage('chats')}>Чаты</button></nav><div className="profile"><span className="avatar">{user.email[0].toUpperCase()}</span><span className="profile-email">{user.email}</span><button className="logout" onClick={onLogout} aria-label="Выйти">↗</button></div></header>
+      <header className="topbar"><div className="brand"><span className="brand-mark">L</span><span>Lab<span>Mate</span></span></div><nav><button className={mode === 'student' && page === 'tasks' ? 'active' : ''} onClick={() => { switchMode('student'); setPage('tasks') }}>Для студента</button><button className={mode === 'tutor' && page === 'tasks' ? 'active' : ''} onClick={() => { switchMode('tutor'); setPage('tasks') }}>Для помощника</button><button className={page === 'chats' ? 'active' : ''} onClick={() => setPage('chats')}>Чаты</button></nav><div className="profile"><span className="avatar">{user.email[0].toUpperCase()}</span><span className="profile-email">{user.email}</span><button className="logout" onClick={onLogout} aria-label="Выйти">↗</button></div></header>
       <main className="dashboard">
         {page !== 'chats' && <section className="welcome"><div><p className="eyebrow">{mode === 'student' ? 'ЛИЧНЫЙ КАБИНЕТ' : 'РАБОЧИЙ СТОЛ ПОМОЩНИКА'}</p><h1>{mode === 'student' ? <>Привет, <em>исследователь.</em></> : <>Найди задачу,<br /><em>которую решишь.</em></>}</h1><p className="muted">{mode === 'student' ? 'Опиши, что изучаешь — и найди того, кто поможет разобраться.' : 'Помогай студентам двигаться вперёд и делись своим опытом.'}</p></div><div className="welcome-mark">{mode === 'student' ? '✦' : '↗'}</div></section>}
         {notice && <div className="notice">{notice}<button onClick={() => setNotice('')}>×</button></div>}
         {page === 'chats' ? <ChatsView chats={chats} userId={user.id} onChanged={loadChats} /> : mode === 'student' ? <StudentView tasks={filteredTasks} topics={catalog.topics} onCreate={() => setShowCreate(true)} onDelete={deleteTask} onOpen={setSelectedTask} /> : <TutorView tasks={filteredTasks} topics={catalog.topics} search={search} topic={topic} minPrice={minPrice} onSearch={setSearch} onTopic={setTopic} onMinPrice={setMinPrice} onOpen={setSelectedTask} />}
       </main>
       {showCreate && <CreateTask catalog={catalog} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void loadTasks() }} />}
-      {selectedTask && <TaskDrawer task={selectedTask} mode={mode} onClose={() => setSelectedTask(null)} onUpdated={() => { setSelectedTask(null); void loadTasks(); void loadChats() }} />}
+      {selectedTask && <TaskDrawer task={selectedTask} mode={mode} onClose={() => setSelectedTask(null)} onUpdated={() => { setSelectedTask(null); void loadTasks(); void loadChats() }} onAccepted={() => { setSelectedTask(null); void loadTasks(); setPage('chats') }} />}
     </div>
   )
 }
@@ -145,10 +160,12 @@ function ChatsView({ chats, userId, onChanged }: { chats: ChatSummary[]; userId:
 
 function Messenger({ chat, userId, onChanged }: { chat: ChatSummary | null; userId: number; onChanged: () => Promise<void> }) {
   const [messages, setMessages] = useState<Message[]>([]); const [body, setBody] = useState(''); const [error, setError] = useState('')
+  const messagesRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => { if (chat) void request<Chat[]>(`/tasks/${chat.taskId}/chats`).then((items) => setMessages(items.find((item) => item.tutorId === chat.tutorId)?.messages ?? [])).catch((reason) => setError(reason instanceof Error ? reason.message : 'Не удалось загрузить переписку')) }, [chat])
+  useEffect(() => { const container = messagesRef.current; if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' }) }, [messages])
   async function send(event: FormEvent) { event.preventDefault(); if (!chat || !body.trim()) return; try { await request(`/tasks/${chat.taskId}/messages`, { method: 'POST', body: JSON.stringify({ tutorId: chat.tutorId, body: body.trim() }) }); setBody(''); const items = await request<Chat[]>(`/tasks/${chat.taskId}/chats`); setMessages(items.find((item) => item.tutorId === chat.tutorId)?.messages ?? []); await onChanged() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось отправить сообщение') } }
   if (!chat) return <div className="messenger-empty">Выберите чат слева</div>
-  return <div className="messenger-window"><header className="messenger-header"><div className="avatar">{(chat.partnerEmail[0] ?? 'L').toUpperCase()}</div><div><strong>{chat.partnerEmail}</strong><span>Чат по задаче: {chat.title}</span></div><span className="messenger-topic">{chat.subject} · {chat.topic}</span></header><div className="messenger-task"><strong>{chat.title}</strong><span>{chat.assignment}</span><b>{chat.price.toLocaleString('ru-RU')} ₽</b></div><div className="messenger-messages">{messages.map((message) => <div className={`messenger-message ${message.senderId === userId ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{new Date(message.createdAt).toLocaleString('ru-RU')}</small></div>)}</div><form className="messenger-compose" onSubmit={send}><input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Написать сообщение..." /><button className="primary-button" type="submit">Отправить <span>↑</span></button></form>{error && <p className="form-error messenger-error">{error}</p>}</div>
+  return <div className="messenger-window"><header className="messenger-header"><div className="avatar">{(chat.partnerEmail[0] ?? 'L').toUpperCase()}</div><div><strong>{chat.partnerEmail}</strong><span>Чат по задаче: {chat.title}</span></div><span className="messenger-topic">{chat.subject} · {chat.topic}</span></header><div className="messenger-task"><strong>{chat.title}</strong><span>{chat.assignment}</span><b>{chat.price.toLocaleString('ru-RU')} ₽</b></div><div className="messenger-messages" ref={messagesRef}>{messages.map((message) => <div className={`messenger-message ${message.senderId === userId ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{new Date(message.createdAt).toLocaleString('ru-RU')}</small></div>)}</div><form className="messenger-compose" onSubmit={send}><input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Написать сообщение..." /><button className="primary-button" type="submit">Отправить <span>↑</span></button></form>{error && <p className="form-error messenger-error">{error}</p>}</div>
 }
 
 function TaskCard({ task, student = false, onOpen, onDelete }: { task: Task; student?: boolean; onOpen: (task: Task) => void; onDelete?: (id: number) => void }) {
@@ -170,12 +187,17 @@ function Autocomplete({ label, value, options, onChange, placeholder }: { label:
   return <label className="autocomplete-field">{label}<input value={value} onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 120)} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required />{focused && (matches.length > 0 || showCreate) && <div className="suggestions">{matches.map((option) => <button type="button" key={option} onMouseDown={() => onChange(option)}>{option}</button>)}{showCreate && <button type="button" className="create-option" onMouseDown={() => onChange(value.trim())}>+ Добавить «{value.trim()}»</button>}</div>}</label>
 }
 
-function TaskDrawer({ task, mode, onClose, onUpdated }: { task: Task; mode: Role; onClose: () => void; onUpdated: () => void }) {
-  const [message, setMessage] = useState(''); const [chat, setChat] = useState<Chat[]>([]); const [tutorId, setTutorId] = useState<number | null>(null); const [error, setError] = useState('')
-  useEffect(() => { void request<Chat[]>(`/tasks/${task.id}/chats`).then(setChat).catch(() => undefined) }, [task.id])
+function TaskDrawer({ task, mode, onClose, onUpdated, onAccepted }: { task: Task; mode: Role; onClose: () => void; onUpdated: () => void; onAccepted: () => void }) {
+  const [message, setMessage] = useState(''); const [chat, setChat] = useState<Chat[]>([]); const [tutorId, setTutorId] = useState<number | null>(null); const [error, setError] = useState(''); const [unavailable, setUnavailable] = useState(false)
+  useEffect(() => {
+    setUnavailable(false)
+    void request<Chat[]>(`/tasks/${task.id}/chats`).then(setChat).catch((reason) => {
+      if (reason instanceof Error && reason.message.includes('принята другим')) setUnavailable(true)
+    })
+  }, [task.id])
   async function apply() { try { await request(`/tasks/${task.id}/apply`, { method: 'POST', body: JSON.stringify({ message }) }); onUpdated() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось отправить отклик') } }
   async function send() { if (!message || !tutorId) return; try { await request(`/tasks/${task.id}/messages`, { method: 'POST', body: JSON.stringify({ tutorId, body: message }) }); setMessage(''); const next = await request<Chat[]>(`/tasks/${task.id}/chats`); setChat(next) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось отправить сообщение') } }
-  async function selectTutor(id: number) { try { await request(`/tasks/${task.id}/select`, { method: 'POST', body: JSON.stringify({ tutorId: id }) }); onUpdated() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось выбрать помощника') } }
+  async function selectTutor(id: number) { try { await request(`/tasks/${task.id}/select`, { method: 'POST', body: JSON.stringify({ tutorId: id }) }); onAccepted() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось выбрать помощника') } }
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <aside className="drawer">
       <button className="close" onClick={onClose}>×</button>
@@ -185,19 +207,23 @@ function TaskDrawer({ task, mode, onClose, onUpdated }: { task: Task; mode: Role
       {task.comment && <p className="drawer-comment"><strong>Комментарий разместителя</strong><br />{task.comment}</p>}
       <div className="drawer-budget"><span>Бюджет</span><strong>{task.price.toLocaleString('ru-RU')} ₽</strong></div>
       <hr />
-      <h3>{mode === 'tutor' && chat.length === 0 ? 'Твой отклик' : 'Переписка'}</h3>
-      {mode === 'tutor' && chat.length === 0 ? (
+      <h3>{mode === 'tutor' ? (!task.selectedTutorId ? 'Твой отклик' : 'Переписка') : (!task.selectedTutorId ? 'Отклики помощников' : 'Переписка')}</h3>
+      {mode === 'tutor' && unavailable ? (
+        <div className="chat-block"><strong>Задача уже принята другим помощником</strong><p className="muted">Выберите другую доступную задачу из ленты.</p></div>
+      ) : mode === 'tutor' && !task.selectedTutorId && chat.length === 0 ? (
         <>
           <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Расскажи, как поможешь решить задачу..." rows={5} />
           <button className="primary-button wide" onClick={apply}>Отправить отклик <span>→</span></button>
         </>
+      ) : mode === 'tutor' && !task.selectedTutorId ? (
+        <div className="chat-block"><strong>Отклик отправлен</strong><p className="muted">Чат откроется после того, как студент выберет вас.</p></div>
       ) : (
         <>
           {chat.length ? chat.map((item) => (
             <div className="chat-block" key={item.tutorId}>
               <div className="chat-heading"><span className="avatar small">{item.tutorEmail[0].toUpperCase()}</span><strong>{item.tutorEmail}</strong>{mode === 'student' && !task.selectedTutorId && <button className="choose-button" onClick={() => selectTutor(item.tutorId)}>Выбрать</button>}</div>
               {item.messages.map((chatMessage) => <div className="message" key={chatMessage.id}><p>{chatMessage.body}</p><small>{new Date(chatMessage.createdAt).toLocaleString('ru-RU')}</small></div>)}
-              {(!task.selectedTutorId || task.selectedTutorId === item.tutorId) && <div className="message-compose"><input value={tutorId === item.tutorId ? message : ''} onFocus={() => setTutorId(item.tutorId)} onChange={(event) => { setTutorId(item.tutorId); setMessage(event.target.value) }} placeholder="Написать сообщение..." /><button onClick={send}>↑</button></div>}
+              {task.selectedTutorId === item.tutorId && <div className="message-compose"><input value={tutorId === item.tutorId ? message : ''} onFocus={() => setTutorId(item.tutorId)} onChange={(event) => { setTutorId(item.tutorId); setMessage(event.target.value) }} placeholder="Написать сообщение..." /><button onClick={send}>↑</button></div>}
             </div>
           )) : <p className="muted">Пока никто не откликнулся. Загляни сюда позже.</p>}
         </>
