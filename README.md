@@ -11,6 +11,8 @@ npm run dev:full
 
 Клиент откроется на `http://localhost:5173`, API работает на `http://localhost:3001`. SQLite-файл `labmate.sqlite` создаётся автоматически в корне проекта.
 
+SQLite работает через `sql.js` (WebAssembly), поэтому для установки зависимостей не нужны Visual Studio, MSVC, Windows SDK или Python.
+
 В MVP доступны:
 
 - регистрация и вход по email/паролю;

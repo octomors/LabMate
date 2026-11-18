@@ -1,18 +1,67 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
-import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import initSqlJs, { type Database as SqlDatabase, type SqlJsStatic } from 'sql.js'
 
 type Role = 'student' | 'tutor'
 type AuthRequest = Request & { user?: { id: number; email: string; role: Role } }
 
 const app = express()
-const db = new Database(path.join(process.cwd(), 'labmate.sqlite'))
+const databasePath = path.join(process.cwd(), 'labmate.sqlite')
+let db: SqliteStore
 const secret = process.env.JWT_SECRET ?? 'labmate-development-secret'
 
-db.pragma('foreign_keys = ON')
-db.exec(`
+class SqliteStore {
+  constructor(private readonly database: SqlDatabase) {}
+
+  exec(sql: string) {
+    this.database.run(sql)
+    this.save()
+  }
+
+  pragma(sql: string) {
+    this.database.run(`PRAGMA ${sql}`)
+  }
+
+  prepare(sql: string) {
+    return {
+      all: (...params: unknown[]) => {
+        const statement = this.database.prepare(sql)
+        statement.bind(params)
+        const rows: Record<string, unknown>[] = []
+        while (statement.step()) rows.push(statement.getAsObject() as Record<string, unknown>)
+        statement.free()
+        return rows
+      },
+      get: (...params: unknown[]) => {
+        const statement = this.database.prepare(sql)
+        statement.bind(params)
+        const row = statement.step() ? statement.getAsObject() : undefined
+        statement.free()
+        return row
+      },
+      run: (...params: unknown[]) => {
+        this.database.run(sql, params)
+        const result = this.database.exec('SELECT changes() AS changes, last_insert_rowid() AS lastInsertRowid')[0]?.values[0] ?? [0, 0]
+        this.save()
+        return { changes: Number(result[0]), lastInsertRowid: Number(result[1]) }
+      },
+    }
+  }
+
+  private save() {
+    fs.writeFileSync(databasePath, Buffer.from(this.database.export()))
+  }
+}
+
+async function initializeDatabase() {
+  const sqlite = await initSqlJs({ locateFile: (file) => path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', file) })
+  const database = new sqlite.Database(fs.existsSync(databasePath) ? new Uint8Array(fs.readFileSync(databasePath)) : undefined)
+  db = new SqliteStore(database)
+  db.pragma('foreign_keys = ON')
+  db.exec(`
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'student', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS topics (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
   CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
@@ -20,12 +69,13 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, tutor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(task_id, tutor_id));
   CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, sender_id INTEGER NOT NULL REFERENCES users(id), tutor_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 `)
-const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]
-if (!taskColumns.some((column) => column.name === 'subject_id')) db.exec('ALTER TABLE tasks ADD COLUMN subject_id INTEGER REFERENCES subjects(id)')
-if (!taskColumns.some((column) => column.name === 'assignment')) db.exec("ALTER TABLE tasks ADD COLUMN assignment TEXT NOT NULL DEFAULT ''")
-if (!taskColumns.some((column) => column.name === 'comment')) db.exec("ALTER TABLE tasks ADD COLUMN comment TEXT NOT NULL DEFAULT ''")
-db.prepare("INSERT OR IGNORE INTO subjects (name) VALUES ('Без предмета')").run()
-db.prepare("UPDATE tasks SET subject_id = (SELECT id FROM subjects WHERE name = 'Без предмета') WHERE subject_id IS NULL").run()
+  const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]
+  if (!taskColumns.some((column) => column.name === 'subject_id')) db.exec('ALTER TABLE tasks ADD COLUMN subject_id INTEGER REFERENCES subjects(id)')
+  if (!taskColumns.some((column) => column.name === 'assignment')) db.exec("ALTER TABLE tasks ADD COLUMN assignment TEXT NOT NULL DEFAULT ''")
+  if (!taskColumns.some((column) => column.name === 'comment')) db.exec("ALTER TABLE tasks ADD COLUMN comment TEXT NOT NULL DEFAULT ''")
+  db.prepare("INSERT OR IGNORE INTO subjects (name) VALUES ('Без предмета')").run()
+  db.prepare("UPDATE tasks SET subject_id = (SELECT id FROM subjects WHERE name = 'Без предмета') WHERE subject_id IS NULL").run()
+}
 
 app.use(express.json())
 
@@ -167,4 +217,9 @@ app.get('/api/chats', auth, (req: AuthRequest, res) => {
 })
 
 app.use((_req, res) => res.status(404).json({ error: 'Не найдено' }))
-app.listen(Number(process.env.PORT ?? 3001), () => console.log('LabMate API: http://localhost:3001'))
+void initializeDatabase().then(() => {
+  app.listen(Number(process.env.PORT ?? 3001), () => console.log('LabMate API: http://localhost:3001'))
+}).catch((error: unknown) => {
+  console.error('Failed to initialize SQLite database', error)
+  process.exitCode = 1
+})
