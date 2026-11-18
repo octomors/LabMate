@@ -75,7 +75,7 @@ function AuthScreen({ mode, error, onModeChange, onSubmit }: { mode: 'login' | '
         </form>
         <p className="auth-switch">{mode === 'login' ? 'Ещё нет аккаунта?' : 'Уже есть аккаунт?'} <button type="button" onClick={() => onModeChange(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'Создать' : 'Войти'}</button></p>
       </div>
-      <div className="auth-art"><div className="orb orb-one" /><div className="orb orb-two" /><div className="art-note">«Каждая задача<br />становится проще,<br /><strong>когда ты не один.</strong>»</div><div className="art-caption">ТВОЙ ПРОСТРАНСТВО<br />ДЛЯ РОСТА</div></div>
+      <div className="auth-art"><div className="orb orb-one" /><div className="orb orb-two" /><div className="art-note">«Каждая задача<br />становится проще,<br /><strong>когда ты не один.</strong>»</div></div>
     </main>
   )
 }
