@@ -3,7 +3,7 @@ import './App.css'
 
 type Role = 'student' | 'tutor'
 type User = { id: number; email: string; role: Role }
-type Task = { id: number; title: string; subject: string; topic: string; assignment: string; comment: string; price: number; selectedTutorId: number | null; studentEmail: string; applications: number; firstMessage?: string }
+type Task = { id: number; title: string; subject: string; topic: string; assignment: string; comment: string; price: number; selectedTutorId: number | null; status?: 'active' | 'in_progress' | 'completed'; studentEmail: string; applications: number; firstMessage?: string }
 type ChatSummary = { taskId: number; title: string; subject: string; topic: string; assignment: string; comment: string; price: number; selectedTutorId: number | null; studentEmail: string; tutorId: number; partnerEmail: string; lastAt: string; lastMessage: string }
 type Catalog = { subjects: string[]; topics: string[] }
 type Chat = { tutorId: number; tutorEmail: string; messages: Message[] }
@@ -90,7 +90,9 @@ function Dashboard({ user, mode, onModeChange, onLogout }: { user: User; mode: R
   const [search, setSearch] = useState('')
   const [topic, setTopic] = useState('')
   const [minPrice, setMinPrice] = useState('')
+  const [studentTab, setStudentTab] = useState<'active' | 'in_progress' | 'completed'>('active')
   const [notice, setNotice] = useState('')
+  const [chatTaskId, setChatTaskId] = useState<number | null>(null)
 
   async function loadTasks(nextMode: Role = mode) {
     try {
@@ -135,7 +137,7 @@ function Dashboard({ user, mode, onModeChange, onLogout }: { user: User; mode: R
       <main className="dashboard">
         {page !== 'chats' && <section className="welcome"><div><p className="eyebrow">{mode === 'student' ? 'ЛИЧНЫЙ КАБИНЕТ' : 'РАБОЧИЙ СТОЛ ПОМОЩНИКА'}</p><h1>{mode === 'student' ? <>Привет, <em>исследователь.</em></> : <>Найди задачу,<br /><em>которую решишь.</em></>}</h1><p className="muted">{mode === 'student' ? 'Опиши, что изучаешь — и найди того, кто поможет разобраться.' : 'Помогай студентам двигаться вперёд и делись своим опытом.'}</p></div><div className="welcome-mark">{mode === 'student' ? '✦' : '↗'}</div></section>}
         {notice && <div className="notice">{notice}<button onClick={() => setNotice('')}>×</button></div>}
-        {page === 'chats' ? <ChatsView chats={chats} userId={user.id} onChanged={loadChats} /> : mode === 'student' ? <StudentView tasks={filteredTasks} topics={catalog.topics} onCreate={() => setShowCreate(true)} onDelete={deleteTask} onOpen={setSelectedTask} /> : <TutorView tasks={filteredTasks} topics={catalog.topics} search={search} topic={topic} minPrice={minPrice} onSearch={setSearch} onTopic={setTopic} onMinPrice={setMinPrice} onOpen={setSelectedTask} />}
+        {page === 'chats' ? <ChatsView chats={chats} initialTaskId={chatTaskId} userId={user.id} onChanged={loadChats} /> : mode === 'student' ? <StudentView tasks={filteredTasks} topics={catalog.topics} studentTab={studentTab} onStudentTab={setStudentTab} onCreate={() => setShowCreate(true)} onDelete={deleteTask} onOpen={setSelectedTask} onOpenChat={(taskId) => { setChatTaskId(taskId); setPage('chats'); void loadChats() }} /> : <TutorView tasks={filteredTasks} topics={catalog.topics} search={search} topic={topic} minPrice={minPrice} onSearch={setSearch} onTopic={setTopic} onMinPrice={setMinPrice} onOpen={setSelectedTask} />}
       </main>
       {showCreate && <CreateTask catalog={catalog} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void loadTasks() }} />}
       {selectedTask && <TaskDrawer task={selectedTask} mode={mode} onClose={() => setSelectedTask(null)} onUpdated={() => { setSelectedTask(null); void loadTasks(); void loadChats() }} onAccepted={() => { setSelectedTask(null); void loadTasks(); setPage('chats') }} />}
@@ -143,17 +145,59 @@ function Dashboard({ user, mode, onModeChange, onLogout }: { user: User; mode: R
   )
 }
 
-function StudentView({ tasks, topics, onCreate, onDelete, onOpen }: { tasks: Task[]; topics: string[]; onCreate: () => void; onDelete: (id: number) => void; onOpen: (task: Task) => void }) {
-  return <><div className="section-heading"><div><h2>Мои задачи <span className="count">{tasks.length}</span></h2><p className="muted">Здесь появятся отклики и чаты помощников.</p></div><button className="primary-button" onClick={onCreate}>+ Новая задача</button></div><div className="task-grid">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} student onOpen={onOpen} onDelete={onDelete} />) : <EmptyState onCreate={onCreate} />}</div><div className="topic-strip"><span>Популярные темы</span>{topics.slice(0, 5).map((item) => <span className="topic-pill" key={item}>{item}</span>)}</div></>
+function StudentView({ tasks, topics, onCreate, onDelete, onOpen, onOpenChat, studentTab, onStudentTab }: { tasks: Task[]; topics: string[]; onCreate: () => void; onDelete: (id: number) => void; onOpen: (task: Task) => void; onOpenChat: (taskId: number) => void; studentTab: 'active' | 'in_progress' | 'completed'; onStudentTab: (tab: 'active' | 'in_progress' | 'completed') => void }) {
+  const filteredTasks = tasks.filter((task) => (task.status ?? 'active') === studentTab)
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h2>Мои задачи <span className="count">{filteredTasks.length}</span></h2>
+          <p className="muted">Здесь появятся отклики и чаты помощников.</p>
+        </div>
+        <button className="primary-button" onClick={onCreate}>+ Новая задача</button>
+      </div>
+      <div className="task-tabs" role="tablist" aria-label="Статус задач">
+        <button className={studentTab === 'active' ? 'active' : ''} onClick={() => onStudentTab('active')}>Активные</button>
+        <button className={studentTab === 'in_progress' ? 'active' : ''} onClick={() => onStudentTab('in_progress')}>В работе</button>
+        <button className={studentTab === 'completed' ? 'active' : ''} onClick={() => onStudentTab('completed')}>Завершённые</button>
+      </div>
+      <div className="task-grid">
+        {filteredTasks.length ? filteredTasks.map((task) => <TaskCard key={task.id} task={task} student onOpen={onOpen} onDelete={onDelete} onOpenChat={onOpenChat} />) : <EmptyState onCreate={onCreate} />}
+      </div>
+      <div className="topic-strip"><span>Популярные темы</span>{topics.slice(0, 5).map((item) => <span className="topic-pill" key={item}>{item}</span>)}</div>
+    </>
+  )
 }
 
 function TutorView({ tasks, topics, search, topic, minPrice, onSearch, onTopic, onMinPrice, onOpen }: { tasks: Task[]; topics: string[]; search: string; topic: string; minPrice: string; onSearch: (value: string) => void; onTopic: (value: string) => void; onMinPrice: (value: string) => void; onOpen: (task: Task) => void }) {
-  return <><div className="filter-bar"><div className="search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Поиск по задачам" /></div><select value={topic} onChange={(event) => onTopic(event.target.value)}><option value="">Все темы</option>{topics.map((item) => <option key={item}>{item}</option>)}</select><label className="price-filter">от <input type="number" value={minPrice} onChange={(event) => onMinPrice(event.target.value)} placeholder="цена" /> ₽</label></div><div className="section-heading"><div><h2>Лента задач <span className="count">{tasks.length}</span></h2><p className="muted">Выбери задачу, где твой опыт будет полезен.</p></div></div><div className="task-grid">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} onOpen={onOpen} />) : <div className="empty-card">По этим фильтрам задач нет.</div>}</div></>
+  return (
+    <>
+      <div className="filter-bar">
+        <div className="search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Поиск по задачам" /></div>
+        <select value={topic} onChange={(event) => onTopic(event.target.value)}><option value="">Все темы</option>{topics.map((item) => <option key={item}>{item}</option>)}</select>
+        <label className="price-filter">от <input type="number" value={minPrice} onChange={(event) => onMinPrice(event.target.value)} placeholder="цена" /> ₽</label>
+      </div>
+      <div className="section-heading">
+        <div>
+          <h2>Лента задач <span className="count">{tasks.length}</span></h2>
+          <p className="muted">Выбери задачу, где твой опыт будет полезен.</p>
+        </div>
+      </div>
+      <div className="task-grid">
+        {tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} onOpen={onOpen} />) : <div className="empty-card">По этим фильтрам задач нет.</div>}
+      </div>
+    </>
+  )
 }
 
-function ChatsView({ chats, userId, onChanged }: { chats: ChatSummary[]; userId: number; onChanged: () => Promise<void> }) {
-  const [active, setActive] = useState<ChatSummary | null>(chats[0] ?? null)
-  useEffect(() => { if (!active || !chats.some((chat) => chat.taskId === active.taskId && chat.tutorId === active.tutorId)) setActive(chats[0] ?? null) }, [chats, active])
+function ChatsView({ chats, initialTaskId, userId, onChanged }: { chats: ChatSummary[]; initialTaskId: number | null; userId: number; onChanged: () => Promise<void> }) {
+  const initialChat = chats.find((chat) => chat.taskId === initialTaskId) ?? chats[0] ?? null
+  const [active, setActive] = useState<ChatSummary | null>(initialChat)
+  useEffect(() => {
+    const matching = chats.find((chat) => chat.taskId === initialTaskId)
+    if (matching) setActive(matching)
+    else if (!active || !chats.some((chat) => chat.taskId === active.taskId && chat.tutorId === active.tutorId)) setActive(chats[0] ?? null)
+  }, [chats, initialTaskId])
   if (!chats.length) return <div className="empty-card standalone-empty"><div className="empty-icon">✦</div><h3>Чатов пока нет</h3><p>Здесь появятся отдельные переписки по задачам.</p></div>
   return <section className="messenger"><aside className="chat-sidebar"><div className="chat-sidebar-heading"><div><p className="eyebrow">ПЕРЕПИСКИ</p><h2>Все чаты <span className="count">{chats.length}</span></h2></div></div><div className="chat-sidebar-list">{chats.map((chat) => <button className={`chat-list-item ${active?.taskId === chat.taskId && active.tutorId === chat.tutorId ? 'selected' : ''}`} key={`${chat.taskId}-${chat.tutorId}`} onClick={() => setActive(chat)}><span className="avatar">{(chat.partnerEmail[0] ?? 'L').toUpperCase()}</span><span className="chat-list-content"><strong>{chat.partnerEmail}</strong><small>{chat.title}</small><span>{chat.lastMessage}</span></span><time>{new Date(chat.lastAt).toLocaleDateString('ru-RU')}</time></button>)}</div></aside><Messenger chat={active} userId={userId} onChanged={onChanged} /></section>
 }
@@ -168,8 +212,20 @@ function Messenger({ chat, userId, onChanged }: { chat: ChatSummary | null; user
   return <div className="messenger-window"><header className="messenger-header"><div className="avatar">{(chat.partnerEmail[0] ?? 'L').toUpperCase()}</div><div><strong>{chat.partnerEmail}</strong><span>Чат по задаче: {chat.title}</span></div><span className="messenger-topic">{chat.subject} · {chat.topic}</span></header><div className="messenger-task"><strong>{chat.title}</strong><span>{chat.assignment}</span><b>{chat.price.toLocaleString('ru-RU')} ₽</b></div><div className="messenger-messages" ref={messagesRef}>{messages.map((message) => <div className={`messenger-message ${message.senderId === userId ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{new Date(message.createdAt).toLocaleString('ru-RU')}</small></div>)}</div><form className="messenger-compose" onSubmit={send}><input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Написать сообщение..." /><button className="primary-button" type="submit">Отправить <span>↑</span></button></form>{error && <p className="form-error messenger-error">{error}</p>}</div>
 }
 
-function TaskCard({ task, student = false, onOpen, onDelete }: { task: Task; student?: boolean; onOpen: (task: Task) => void; onDelete?: (id: number) => void }) {
-  return <article className="task-card" onClick={() => onOpen(task)} role="button" tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && onOpen(task)}><div className="card-top"><span className="topic-label">{task.subject} · {task.topic}</span><span className="price">{task.price.toLocaleString('ru-RU')} ₽</span></div><h3>{task.title}</h3><p>{task.assignment}</p>{task.comment && <p className="task-comment">Пометка: {task.comment}</p>}<div className="card-meta"><span className="student-name">{student ? 'Вы' : task.studentEmail}</span><span>{task.applications ? `${task.applications} отклика` : 'Пока без откликов'}</span></div><div className="card-actions">{student ? <><button className="text-button" onClick={(event) => { event.stopPropagation(); onOpen(task) }}>Открыть отклики <span>→</span></button><button className="delete-button" onClick={(event) => { event.stopPropagation(); onDelete?.(task.id) }}>Удалить</button></> : <button className="primary-button small" onClick={(event) => { event.stopPropagation(); onOpen(task) }}>Откликнуться <span>→</span></button>}</div></article>
+function TaskCard({ task, student = false, onOpen, onDelete, onOpenChat }: { task: Task; student?: boolean; onOpen: (task: Task) => void; onDelete?: (id: number) => void; onOpenChat?: (taskId: number) => void }) {
+  return <article className="task-card" onClick={() => onOpen(task)} role="button" tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && onOpen(task)}>
+    <div className="card-top"><span className="topic-label">{task.subject} · {task.topic}</span><span className="price">{task.price.toLocaleString('ru-RU')} ₽</span></div>
+    <h3>{task.title}</h3><p>{task.assignment}</p>{task.comment && <p className="task-comment">Пометка: {task.comment}</p>}
+    <div className="card-meta"><span className="student-name">{student ? 'Вы' : task.studentEmail}</span><span>{task.applications ? `${task.applications} отклика` : 'Пока без откликов'}</span></div>
+    <div className="card-actions">
+      {student ? <>
+        {(task.status === 'in_progress' || task.status === 'completed')
+          ? <button className="text-button" onClick={(event) => { event.stopPropagation(); onOpenChat?.(task.id) }}>Перейти в чат <span>→</span></button>
+          : <button className="text-button" onClick={(event) => { event.stopPropagation(); onOpen(task) }}>Открыть отклики <span>→</span></button>}
+        <button className="delete-button" onClick={(event) => { event.stopPropagation(); onDelete?.(task.id) }}>Удалить</button>
+      </> : <button className="primary-button small" onClick={(event) => { event.stopPropagation(); onOpen(task) }}>Откликнуться <span>→</span></button>}
+    </div>
+  </article>
 }
 
 function EmptyState({ onCreate }: { onCreate: () => void }) { return <div className="empty-card"><div className="empty-icon">✦</div><h3>Начни с первой задачи</h3><p>Опиши, что сейчас изучаешь, и помощники предложат свою поддержку.</p><button className="text-button" onClick={onCreate}>Создать задачу <span>→</span></button></div> }
@@ -198,6 +254,7 @@ function TaskDrawer({ task, mode, onClose, onUpdated, onAccepted }: { task: Task
   async function apply() { try { await request(`/tasks/${task.id}/apply`, { method: 'POST', body: JSON.stringify({ message }) }); onUpdated() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось отправить отклик') } }
   async function send() { if (!message || !tutorId) return; try { await request(`/tasks/${task.id}/messages`, { method: 'POST', body: JSON.stringify({ tutorId, body: message }) }); setMessage(''); const next = await request<Chat[]>(`/tasks/${task.id}/chats`); setChat(next) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось отправить сообщение') } }
   async function selectTutor(id: number) { try { await request(`/tasks/${task.id}/select`, { method: 'POST', body: JSON.stringify({ tutorId: id }) }); onAccepted() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось выбрать помощника') } }
+  async function completeTask() { try { await request(`/tasks/${task.id}/complete`, { method: 'POST' }); onUpdated() } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось завершить задачу') } }
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <aside className="drawer">
       <button className="close" onClick={onClose}>×</button>
@@ -222,11 +279,14 @@ function TaskDrawer({ task, mode, onClose, onUpdated, onAccepted }: { task: Task
           {chat.length ? chat.map((item) => (
             <div className="chat-block" key={item.tutorId}>
               <div className="chat-heading"><span className="avatar small">{item.tutorEmail[0].toUpperCase()}</span><strong>{item.tutorEmail}</strong>{mode === 'student' && !task.selectedTutorId && <button className="choose-button" onClick={() => selectTutor(item.tutorId)}>Выбрать</button>}</div>
-              {item.messages.map((chatMessage) => <div className="message" key={chatMessage.id}><p>{chatMessage.body}</p><small>{new Date(chatMessage.createdAt).toLocaleString('ru-RU')}</small></div>)}
+              {item.messages.slice(0, task.selectedTutorId === item.tutorId ? item.messages.length : 1).map((chatMessage) => <div className="message" key={chatMessage.id}><p>{chatMessage.body}</p><small>{new Date(chatMessage.createdAt).toLocaleString('ru-RU')}</small></div>)}
               {task.selectedTutorId === item.tutorId && <div className="message-compose"><input value={tutorId === item.tutorId ? message : ''} onFocus={() => setTutorId(item.tutorId)} onChange={(event) => { setTutorId(item.tutorId); setMessage(event.target.value) }} placeholder="Написать сообщение..." /><button onClick={send}>↑</button></div>}
             </div>
           )) : <p className="muted">Пока никто не откликнулся. Загляни сюда позже.</p>}
         </>
+      )}
+      {mode === 'student' && task.status === 'in_progress' && (
+        <button className="primary-button wide" onClick={completeTask}>Завершить задачу <span>→</span></button>
       )}
       {error && <p className="form-error">{error}</p>}
     </aside>

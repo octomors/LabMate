@@ -65,7 +65,7 @@ async function initializeDatabase() {
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'student', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS topics (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
   CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
-  CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', subject_id INTEGER REFERENCES subjects(id), topic_id INTEGER NOT NULL REFERENCES topics(id), assignment TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL, selected_tutor_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', subject_id INTEGER REFERENCES subjects(id), topic_id INTEGER NOT NULL REFERENCES topics(id), assignment TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL, selected_tutor_id INTEGER REFERENCES users(id), status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, tutor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(task_id, tutor_id));
   CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, sender_id INTEGER NOT NULL REFERENCES users(id), tutor_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 `)
@@ -73,6 +73,8 @@ async function initializeDatabase() {
   if (!taskColumns.some((column) => column.name === 'subject_id')) db.exec('ALTER TABLE tasks ADD COLUMN subject_id INTEGER REFERENCES subjects(id)')
   if (!taskColumns.some((column) => column.name === 'assignment')) db.exec("ALTER TABLE tasks ADD COLUMN assignment TEXT NOT NULL DEFAULT ''")
   if (!taskColumns.some((column) => column.name === 'comment')) db.exec("ALTER TABLE tasks ADD COLUMN comment TEXT NOT NULL DEFAULT ''")
+  if (!taskColumns.some((column) => column.name === 'status')) db.exec("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+  db.exec("UPDATE tasks SET status='in_progress' WHERE status='active' AND selected_tutor_id IS NOT NULL")
   db.prepare("INSERT OR IGNORE INTO subjects (name) VALUES ('Без предмета')").run()
   db.prepare("UPDATE tasks SET subject_id = (SELECT id FROM subjects WHERE name = 'Без предмета') WHERE subject_id IS NULL").run()
 }
@@ -140,12 +142,12 @@ app.get('/api/tasks', auth, (req: AuthRequest, res) => {
   const topic = isTutor && typeof req.query.topic === 'string' ? req.query.topic : ''
   const minPrice = isTutor ? Number(req.query.minPrice ?? 0) : 0
   const rows = db.prepare(`
-    SELECT t.id, t.title, s.name AS subject, tp.name AS topic, t.assignment, t.comment, t.price, t.selected_tutor_id AS selectedTutorId,
+    SELECT t.id, t.title, s.name AS subject, tp.name AS topic, t.assignment, t.comment, t.price, t.selected_tutor_id AS selectedTutorId, t.status,
       u.email AS studentEmail, COUNT(a.id) AS applications,
       (SELECT body FROM messages m WHERE m.task_id = t.id ORDER BY m.id LIMIT 1) AS firstMessage
     FROM tasks t JOIN topics tp ON tp.id=t.topic_id JOIN subjects s ON s.id=t.subject_id JOIN users u ON u.id=t.student_id
     LEFT JOIN applications a ON a.task_id=t.id
-    WHERE (? = 0 OR t.student_id = ?) AND (? = 0 OR t.student_id != ?) AND (? = 1 OR t.selected_tutor_id IS NULL) AND (? = '' OR tp.name = ?) AND (? = 0 OR t.price >= ?)
+    WHERE (? = 0 OR t.student_id = ?) AND (? = 0 OR t.student_id != ?) AND (? = 0 OR t.selected_tutor_id IS NULL) AND (? = '' OR tp.name = ?) AND (? = 0 OR t.price >= ?)
     GROUP BY t.id ORDER BY t.created_at DESC
   `).all(isTutor ? 0 : 1, req.user?.id, isTutor ? 1 : 0, req.user?.id, isTutor ? 1 : 0, topic, topic, minPrice, minPrice)
   res.json(rows)
@@ -194,11 +196,17 @@ app.get('/api/tasks/:id/chats', auth, (req: AuthRequest, res) => {
   if (!task.selected_tutor_id) {
     if (task.student_id === req.user?.id) {
       const applicants = db.prepare(`
-        SELECT u.id AS tutorId, u.email AS tutorEmail
+        SELECT u.id AS tutorId, u.email AS tutorEmail,
+          (SELECT json_group_array(json_object('id', m.id, 'body', m.body, 'senderId', m.sender_id, 'createdAt', m.created_at))
+           FROM messages m WHERE m.task_id=? AND m.tutor_id=u.id) AS messageJson
         FROM applications a JOIN users u ON u.id=a.tutor_id
         WHERE a.task_id=? ORDER BY a.created_at
-      `).all(req.params.id)
-      return res.json(applicants.map((applicant) => ({ ...applicant as object, messages: [] })))
+      `).all(req.params.id, req.params.id)
+      return res.json(applicants.map((applicant) => ({
+        tutorId: applicant.tutorId,
+        tutorEmail: applicant.tutorEmail,
+        messages: JSON.parse((applicant as { messageJson: string }).messageJson ?? '[]'),
+      })))
     }
     if (applied) {
       const applicant = db.prepare('SELECT id AS tutorId, email AS tutorEmail FROM users WHERE id=?').get(req.user?.id) as { tutorId: number; tutorEmail: string }
@@ -221,7 +229,7 @@ app.post('/api/tasks/:id/select', auth, (req: AuthRequest, res) => {
   if (!task || task.student_id !== req.user?.id) return res.status(403).json({ error: 'Только студент может выбрать репетитора' })
   const applied = db.prepare('SELECT 1 FROM applications WHERE task_id=? AND tutor_id=?').get(req.params.id, req.body.tutorId)
   if (!applied) return res.status(400).json({ error: 'Можно выбрать только откликнувшегося помощника' })
-  db.prepare('UPDATE tasks SET selected_tutor_id=? WHERE id=? AND selected_tutor_id IS NULL').run(req.body.tutorId, req.params.id)
+  db.prepare("UPDATE tasks SET selected_tutor_id=?, status='in_progress' WHERE id=? AND selected_tutor_id IS NULL").run(req.body.tutorId, req.params.id)
   res.status(204).end()
 })
 
@@ -245,6 +253,13 @@ app.get('/api/chats', auth, (req: AuthRequest, res) => {
     WHERE t.selected_tutor_id IS NOT NULL AND (t.student_id=? OR m.tutor_id=?) AND m.tutor_id=t.selected_tutor_id GROUP BY t.id, m.tutor_id ORDER BY lastAt DESC
   `).all(req.user?.id, req.user?.id, req.user?.id)
   res.json(rows)
+})
+
+app.post('/api/tasks/:id/complete', auth, (req: AuthRequest, res) => {
+  const task = db.prepare('SELECT student_id FROM tasks WHERE id=?').get(req.params.id) as { student_id: number } | undefined
+  if (!task || task.student_id !== req.user?.id) return res.status(403).json({ error: 'Только студент может завершить задачу' })
+  db.prepare("UPDATE tasks SET status='completed' WHERE id=?").run(req.params.id)
+  res.status(204).end()
 })
 
 app.use((_req, res) => res.status(404).json({ error: 'Не найдено' }))
